@@ -91,3 +91,37 @@ None — this phase changes no behavior.
 ### Next phase unblocks
 
 Shared libraries (`common-security`, `common-events`, `common-web`) — Phase 2. These are tiny utility libs that the four services will depend on once they exist.
+
+---
+
+## Phase 2 — Shared libraries (2026-05-10)
+
+### What changed
+
+Three standalone Maven libraries under `shared/`:
+
+- **`common-security`** — `JwtIssuer` / `JwtVerifier`, `SecurityHeaders` constants, `AuthenticatedUser` record, `HeaderAuthenticationFilter` (servlet filter that turns gateway-forwarded `X-User-*` headers into Spring `Authentication`), `@CurrentUser` annotation + argument resolver, `UnauthorizedException`.
+- **`common-events`** — `DomainEvent` interface, record-based events (`OrderPlacedEvent`, `OrderCancelledEvent`, `DeliveryStatusUpdatedEvent`), `EventTopology` constants (exchange names, routing keys, queue names).
+- **`common-web`** — `ErrorResponse` record (uniform error envelope), `CorrelationIdFilter` + constants (`X-Correlation-Id` → SLF4J MDC), common exceptions (`ResourceNotFoundException`, `DuplicateResourceException`), `AbstractGlobalExceptionHandler` base.
+
+### Why
+
+- **BOM import, not parent POM.** Each lib uses `spring-boot-dependencies` with `<scope>import</scope>` to inherit managed versions without bringing in plugin inheritance or the executable-jar `repackage` goal. Libraries should ship as plain jars, not Spring Boot fat jars.
+- **No autoconfig.** Services will explicitly `@Bean` the filter and resolver. We trade boilerplate for transparency — every wired component is visible in the service's own config classes.
+- **Records for events.** Events are value objects; records give immutability and a compact shape. `<parameters>true</parameters>` is set on the compiler so Jackson can deserialize records by parameter name.
+- **`HeaderAuthenticationFilter`, not a JWT filter on services.** Downstream services don't validate JWTs — that's the gateway's job. They trust the gateway-forwarded `X-User-Id` / `X-User-Username` / `X-User-Role` headers. One trust boundary, one place to rotate the secret.
+- **Idempotency built into the event contract.** Every event carries an `eventId` (UUID); consumers will record processed IDs in a small DB table to handle RabbitMQ at-least-once delivery.
+
+### Tradeoffs
+
+- Services must `mvn install` each shared lib before building. Mildly annoying for first-time setup; a `scripts/build-shared.sh` will arrive in Phase 10.
+- No autoconfig means a couple of `@Bean` lines per service. Worth the visibility.
+
+### Known limitations
+
+- Only HS256 signing supported. Production should use RS256 + a JWKS endpoint; out of scope.
+- `processed_events_*` table is per-service rather than a generic library — kept local to each consumer because the schema is tiny and per-service ownership is the point.
+
+### Next phase unblocks
+
+Eureka service registry (Phase 3) — a standalone Spring Boot app on `:8761`. Once it's up, the four services have somewhere to register, and the gateway has somewhere to discover services by logical name (`lb://customer-service`).
