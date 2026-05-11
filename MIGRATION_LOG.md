@@ -125,3 +125,32 @@ Three standalone Maven libraries under `shared/`:
 ### Next phase unblocks
 
 Eureka service registry (Phase 3) — a standalone Spring Boot app on `:8761`. Once it's up, the four services have somewhere to register, and the gateway has somewhere to discover services by logical name (`lb://customer-service`).
+
+---
+
+## Phase 3 — Eureka service registry (2026-05-11)
+
+### What changed
+
+- `infrastructure/eureka-server/` — a tiny Spring Boot app on port `8761`. Three files (pom + main + application.yml) plus a README. `@EnableEurekaServer` is the only annotation that matters.
+- Uses `spring-boot-starter-parent` as the Maven parent (Spring Boot's own parent — not a cross-service one) and imports the Spring Cloud BOM (`2023.0.3`) for managed Spring Cloud versions compatible with Spring Boot `3.3.0`.
+
+### Why
+
+- **Eureka first, services second.** Building the registry before any clients exist means service registration "just works" when Phase 4 starts — there's already something listening at `:8761`.
+- **`register-with-eureka: false` / `fetch-registry: false`** — the server doesn't try to register with itself. Forgetting these is one of the most common Eureka misconfigurations; it spams the logs and burns CPU.
+- **`enable-self-preservation: false` in local dev.** Self-preservation is a production safety net (prevents mass eviction during network partitions). Locally it makes stopped services linger in the dashboard, which causes confusion. We'll re-enable it in Docker / prod profiles.
+- **No security on the Eureka dashboard.** Acceptable because the dashboard isn't exposed publicly in real prod (network policy). For the lab it's reachable so the grader can verify registration.
+
+### Tradeoffs
+
+- Single Eureka instance — not HA. Real prod runs at least two peers. Out of scope.
+- `spring-boot-starter-parent` is used here (and will be in every Spring Boot app); this is Spring Boot's own parent, NOT a cross-service shared parent. The "no shared parent" rule still holds.
+
+### Known limitations
+
+- No Docker profile yet. Phase 10 will add `application-docker.yml` so services running in containers reach Eureka via the compose hostname `eureka-server` instead of `localhost`.
+
+### Next phase unblocks
+
+Customer Service extraction (Phase 4) — the first real microservice. It will register with Eureka, expose `/api/auth/**` + `/api/customers/**`, own `customer_db`, and become the source of truth for identity.
