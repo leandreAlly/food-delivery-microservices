@@ -154,3 +154,42 @@ Eureka service registry (Phase 3) — a standalone Spring Boot app on `:8761`. O
 ### Next phase unblocks
 
 Customer Service extraction (Phase 4) — the first real microservice. It will register with Eureka, expose `/api/auth/**` + `/api/customers/**`, own `customer_db`, and become the source of truth for identity.
+
+---
+
+## Phase 4 — Customer Service extraction (2026-05-12)
+
+### What changed
+
+First real domain extracted. `customer-service` listens on `:8081`, registers with Eureka, and exposes:
+
+- **Public**: `POST /api/auth/register`, `POST /api/auth/login`
+- **Authenticated**: `GET/PUT /api/customers/me`, `GET /api/customers/{id}`
+- **Internal** (not gateway-routed): `GET /api/internal/customers/{id}`, `POST /api/internal/customers/{username}/promote-to-owner`
+
+The `Customer` entity is the same shape as in the monolith **except** the cross-domain `@OneToMany List<Order> orders` is gone. Other services reference customers by ID only. `Customer.Role` (CUSTOMER, RESTAURANT_OWNER, ADMIN) stays here and travels in the JWT `role` claim.
+
+### Why these decisions
+
+- **Customer first.** Among the four domains, Customer has zero outbound dependencies. Extracting it is the lowest-risk way to prove the pattern (JWT issuance, Eureka registration, shared lib consumption) before tackling harder domains.
+- **H2 in dev, PostgreSQL in Docker.** The monolith pattern. Lets the user run a single service locally without Postgres. Same dual-profile setup will repeat across all four services.
+- **JWT validated locally by the service (not just at the gateway).** The lab spec calls for gateway-level validation, but doing it in the service too gives us defense in depth AND makes the service individually testable with a Bearer token. Phase 9 will keep both layers active — the gateway becomes the first line, the service the second.
+- **`JwtAuthenticationFilter` lives in the service, not in common-security.** Extracting shared code on the *first* caller is premature. When Restaurant Service in Phase 5 needs the same filter, that's the moment to pull it up. Pattern: extract after two callers, not before.
+- **Internal endpoints under `/api/internal/**`.** Inter-service calls need lookups that bypass auth; putting them on a distinct path prefix means the gateway can simply not route `/api/internal/**`, and network policy in real deployment restricts them to the cluster network.
+- **`promote-to-owner` endpoint instead of role mutation by Restaurant Service.** The monolith had `RestaurantService.createRestaurant` writing to `Customer.role` — a cross-domain write that's the worst kind of coupling. The replacement is an explicit Customer Service operation called via Feign in Phase 5.
+
+### Tradeoffs
+
+- Local `JwtAuthenticationFilter` will be moved to common-security in Phase 5 (small refactor cost, but real engineering signal).
+- `/api/internal/**` is `permitAll` — relies on network policy for security. Documented. Production would add mTLS or a shared internal HMAC.
+- JWT secret defaults to a placeholder in dev `application.yml`. Required to be set via `JWT_SECRET` env var in Docker. Documented in the README.
+
+### Known limitations
+
+- No refresh tokens — access token TTL is 24h, same as monolith.
+- No rate-limiting on `/api/auth/login`. Phase 9 (gateway) will add it.
+- No audit log of role changes (e.g. promote-to-owner). Worth adding in a future iteration.
+
+### Next phase unblocks
+
+Restaurant Service extraction (Phase 5). It will call Customer Service via Feign for `promote-to-owner` (when a customer creates a restaurant) and via the internal lookup endpoint (when validating ownership). That's the first cross-service synchronous call in the system.

@@ -1,0 +1,33 @@
+# =============================================================
+# Customer Service — Docker profile
+# Activated by SPRING_PROFILES_ACTIVE=docker in docker-compose
+# =============================================================
+
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://customer-db:5432/customer_db}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USERNAME:customer}
+    password: ${DB_PASSWORD:customer}
+
+  jpa:
+    hibernate:
+      # update is safe across restarts in dev; switch to validate +
+      # Flyway/Liquibase migrations in real production.
+      ddl-auto: update
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+
+  h2:
+    console:
+      enabled: false
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://eureka-server:8761/eureka/}
+  instance:
+    # In Docker, prefer the container hostname so other services can
+    # reach this one via Docker's internal DNS.
+    prefer-ip-address: false
+    hostname: customer-service
