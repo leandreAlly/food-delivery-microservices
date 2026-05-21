@@ -203,36 +203,39 @@ Order Service extraction (Phase 6). It calls Customer Service (`getById`) and Re
 
 ---
 
-## Phase 7 — Delivery Service extraction (2026-05-15)
+## Phase 6 — Order Service extraction with Feign + Resilience4j (2026-05-14)
 
 ### What changed
 
-- **`services/delivery-service/`** on `:8084`, owns `delivery_db`.
-- One Feign client: `OrderServiceClient.getById(orderId)` — used by the manual create-delivery endpoint to fetch snapshot data.
-- Driver pool stays hardcoded (5 names, 5 phones) — same as the monolith. No Driver Service.
-- **`POST /api/internal/deliveries`** — a "Phase 7 bridge": lets you create a delivery from an `orderId` synchronously. Phase 8 routes the same logic from an `OrderPlacedEvent` consumer.
+- **`services/order-service/`** on `:8083`, owns `order_db` (Order + OrderItem aggregate).
+- **Two Feign clients**, each with its own Resilience4j circuit breaker and fallback:
+  - `CustomerServiceClient.getById(id)` — 3s timeout, 503 fallback
+  - `RestaurantServiceClient.validateOrder(id, items)` — 5s timeout, 503 fallback
+- **Snapshot read model** is now fully real: `Order` stores `customerName`, `customerUsername`, `restaurantName`, `restaurantAddress`; `OrderItem` stores `menuItemName` + `unitPrice`. After save, reads never fan out.
 
 ### Why these decisions
 
-- **Build standalone first, then wire events.** Doing Phase 7 (synchronous Delivery Service) before Phase 8 (RabbitMQ) means you can verify the delivery domain works in isolation — bad event wiring later won't be confused with a bad domain implementation.
-- **Snapshot data into Delivery on create.** `customerName`, `pickupAddress`, `deliveryAddress` are copied from the Order Service response. After this, Delivery never calls Order/Customer/Restaurant on read paths. Same read-model pattern as Order Service.
-- **Unique constraint on `orderId`.** Exactly one delivery per order. Prevents accidental duplicates from event redelivery (in Phase 8) or repeated manual calls.
-- **The `POST /api/internal/deliveries` endpoint stays after Phase 8.** It becomes admin-only (replay, manual recovery) rather than the primary creation path. Worth keeping for ops.
-- **`PATCH /status` mutates `delivery_db` only in Phase 7.** Phase 8 adds `DeliveryStatusUpdatedEvent` publishing so Order Service learns about it asynchronously and updates its own status. Until then, Order's status will lag — documented for testers.
-- **Same Feign + Resilience4j pattern as the other services.** `OrderServiceClient` with a fallback throwing `OrderServiceUnavailableException` → 503. Consistent error envelope; same `actuator/circuitbreakers` exposure.
+- **No RabbitMQ in Phase 6.** Phase 8 owns the entire event integration. Putting half of it here would mean a stub publisher with no consumer — confusing for review. The synchronous `DeliveryService.createDeliveryForOrder()` from the monolith just doesn't happen yet; we accept that delivery records lag until Phase 8.
+- **Feign calls happen BEFORE the local transaction opens.** They're read-only validations; treating them as part of the order persistence transaction would only make a long-running transaction even longer and increase lock contention. The order save itself is a single short local transaction.
+- **`customerUsername` is snapshotted on `Order`.** Ownership checks (cancel, future endpoints) compare it against the JWT-derived username — no inter-service call required at check time.
+- **Each downstream call has its own circuit breaker instance.** Sharing one breaker across services would mean Restaurant Service blips can open the breaker on Customer calls. Isolation per dependency is the standard practice.
+- **Timeouts are tuned per call.** `getById` is cheap (3s). `validateOrder` does a DB lookup of menu items + price computation (5s). Generous for now; would tighten with real telemetry.
+- **Fallback throws rather than returning a stub object.** Returning a fake `CustomerSummary` (or worse, `null`) would corrupt the order. Throwing → 503 is the only honest answer.
+- **No driver/delivery embedded in `OrderResponse`.** Clients query Delivery Service directly for that. The Order's own `status` enum reflects the journey. This breaks the monolith's "one big DTO with everything" pattern intentionally.
+- **`updateStatus` endpoint stays manual.** Phase 8 will drive it from `DeliveryStatusUpdatedEvent` consumption, but the manual endpoint is useful for testing and stays available during the transition.
 
 ### Tradeoffs
 
-- Currently no way for Order Service to know when a driver picks up or delivers (status lags). This is the explicit cost of the Phase 7 / Phase 8 split. Phase 8 fixes it.
-- The hardcoded driver pool means we can't realistically test driver availability scenarios. Acceptable for a learning project; not for prod.
-- `existsByOrderId` short-circuit on the create path prevents duplicates, but a race between two concurrent create calls could still both pass the check before either commits — the DB unique constraint backstops the race. Tradeoff between an extra query and double inserts.
+- **Order placement requires both Customer Service AND Restaurant Service up.** Two synchronous dependencies. Could be reduced (e.g., trust JWT for customer info entirely, skip the lookup), but the monolith's `placeOrder` already fetched both — preserving the contract.
+- **Code duplication with restaurant-service for service-unavailable exceptions.** Both define their own `CustomerServiceUnavailableException`. Tolerated; extract to common-web on a third occurrence.
+- **`updateStatus` and `cancel` don't yet propagate to Delivery.** Until Phase 8, an order can be `CANCELLED` while its delivery still says `ASSIGNED`. Documented; resolved by event flow in Phase 8.
 
 ### Known limitations
 
-- No driver assignment algorithm — `ThreadLocalRandom` over a static array. A real platform would dispatch by proximity, current load, etc.
-- No delivery cancellation endpoint exposed publicly (the monolith didn't have one either). Status `FAILED` is set internally on order cancellation in Phase 8.
-- Status-update endpoint does not validate state transitions (e.g., you can go from `PENDING` straight to `DELIVERED`). A state machine library or simple guard would tighten this.
+- No idempotency on `placeOrder` — a retried `POST` creates duplicate orders. A request ID + dedupe table would fix this; out of scope.
+- No tax / promo code logic — total is plain sum of (price × quantity) + `2.99` delivery fee.
+- `restaurant/{restaurantId}` endpoint returns orders without authorization check. Real prod would require the caller to be the restaurant's owner.
 
 ### Next phase unblocks
 
-RabbitMQ event integration (Phase 8) — the moment Order ↔ Delivery becomes asynchronous. Order Service publishes `OrderPlacedEvent` after order commit; Delivery Service consumes it and creates the delivery (removing the manual `POST /api/internal/deliveries` from the critical path). Delivery Service publishes `DeliveryStatusUpdatedEvent` on driver progress; Order Service consumes it and advances `order.status` automatically. DLQ + idempotency tables handle redelivery.
+Delivery Service extraction (Phase 7). It will own `delivery_db`, expose driver-facing endpoints, and be ready to consume `OrderPlacedEvent` in Phase 8. Once Phase 7 ships, all four business services exist — Phase 8 wires them together asynchronously.
