@@ -1,0 +1,83 @@
+# =============================================================
+# Restaurant Service — local dev profile (H2 in-memory)
+# =============================================================
+
+server:
+  port: 8082
+
+spring:
+  application:
+    name: restaurant-service
+
+  datasource:
+    url: jdbc:h2:mem:restaurant_db;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    database-platform: org.hibernate.dialect.H2Dialect
+
+  cloud:
+    openfeign:
+      circuitbreaker:
+        # Wrap every Feign client invocation in a Resilience4j CB.
+        # Fallbacks declared on the @FeignClient interface are then honored.
+        enabled: true
+
+# --- JWT (validation only — Restaurant Service never issues tokens) ---
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-jwt-secret-do-not-use-in-production-min-256-bits-required}
+    expiration-ms: 86400000
+
+# --- Eureka client ---
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+
+# --- Resilience4j ---
+resilience4j:
+  circuitbreaker:
+    instances:
+      # Instance name must match the Feign client bean name
+      # (Spring's default convention is the @FeignClient interface name in PascalCase).
+      CustomerServiceClient:
+        register-health-indicator: true
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+  timelimiter:
+    instances:
+      CustomerServiceClient:
+        timeout-duration: 3s
+        cancel-running-future: true
+
+# --- Actuator ---
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,circuitbreakers,circuitbreakerevents
+  endpoint:
+    health:
+      show-details: when_authorized
+  health:
+    circuitbreakers:
+      enabled: true
