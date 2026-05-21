@@ -200,3 +200,42 @@ When both PRs merge, the resulting log should read Phase 0 → 1 → 2 → 3 →
 ### Next phase unblocks
 
 Order Service extraction (Phase 6). It calls Customer Service (`getById`) and Restaurant Service (`validateOrder`) via Feign. It uses the snapshot data from `validateOrder` to write `OrderItem` rows that include `menuItemName` and `unitPrice` — Order's reads will never fan out to Restaurant Service.
+
+---
+
+## Phase 6 — Order Service extraction with Feign + Resilience4j (2026-05-14)
+
+### What changed
+
+- **`services/order-service/`** on `:8083`, owns `order_db` (Order + OrderItem aggregate).
+- **Two Feign clients**, each with its own Resilience4j circuit breaker and fallback:
+  - `CustomerServiceClient.getById(id)` — 3s timeout, 503 fallback
+  - `RestaurantServiceClient.validateOrder(id, items)` — 5s timeout, 503 fallback
+- **Snapshot read model** is now fully real: `Order` stores `customerName`, `customerUsername`, `restaurantName`, `restaurantAddress`; `OrderItem` stores `menuItemName` + `unitPrice`. After save, reads never fan out.
+
+### Why these decisions
+
+- **No RabbitMQ in Phase 6.** Phase 8 owns the entire event integration. Putting half of it here would mean a stub publisher with no consumer — confusing for review. The synchronous `DeliveryService.createDeliveryForOrder()` from the monolith just doesn't happen yet; we accept that delivery records lag until Phase 8.
+- **Feign calls happen BEFORE the local transaction opens.** They're read-only validations; treating them as part of the order persistence transaction would only make a long-running transaction even longer and increase lock contention. The order save itself is a single short local transaction.
+- **`customerUsername` is snapshotted on `Order`.** Ownership checks (cancel, future endpoints) compare it against the JWT-derived username — no inter-service call required at check time.
+- **Each downstream call has its own circuit breaker instance.** Sharing one breaker across services would mean Restaurant Service blips can open the breaker on Customer calls. Isolation per dependency is the standard practice.
+- **Timeouts are tuned per call.** `getById` is cheap (3s). `validateOrder` does a DB lookup of menu items + price computation (5s). Generous for now; would tighten with real telemetry.
+- **Fallback throws rather than returning a stub object.** Returning a fake `CustomerSummary` (or worse, `null`) would corrupt the order. Throwing → 503 is the only honest answer.
+- **No driver/delivery embedded in `OrderResponse`.** Clients query Delivery Service directly for that. The Order's own `status` enum reflects the journey. This breaks the monolith's "one big DTO with everything" pattern intentionally.
+- **`updateStatus` endpoint stays manual.** Phase 8 will drive it from `DeliveryStatusUpdatedEvent` consumption, but the manual endpoint is useful for testing and stays available during the transition.
+
+### Tradeoffs
+
+- **Order placement requires both Customer Service AND Restaurant Service up.** Two synchronous dependencies. Could be reduced (e.g., trust JWT for customer info entirely, skip the lookup), but the monolith's `placeOrder` already fetched both — preserving the contract.
+- **Code duplication with restaurant-service for service-unavailable exceptions.** Both define their own `CustomerServiceUnavailableException`. Tolerated; extract to common-web on a third occurrence.
+- **`updateStatus` and `cancel` don't yet propagate to Delivery.** Until Phase 8, an order can be `CANCELLED` while its delivery still says `ASSIGNED`. Documented; resolved by event flow in Phase 8.
+
+### Known limitations
+
+- No idempotency on `placeOrder` — a retried `POST` creates duplicate orders. A request ID + dedupe table would fix this; out of scope.
+- No tax / promo code logic — total is plain sum of (price × quantity) + `2.99` delivery fee.
+- `restaurant/{restaurantId}` endpoint returns orders without authorization check. Real prod would require the caller to be the restaurant's owner.
+
+### Next phase unblocks
+
+Delivery Service extraction (Phase 7). It will own `delivery_db`, expose driver-facing endpoints, and be ready to consume `OrderPlacedEvent` in Phase 8. Once Phase 7 ships, all four business services exist — Phase 8 wires them together asynchronously.
