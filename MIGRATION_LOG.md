@@ -157,39 +157,46 @@ Customer Service extraction (Phase 4) — the first real microservice. It will r
 
 ---
 
-## Phase 4 — Customer Service extraction (2026-05-12)
+## Phase 5 — Restaurant Service extraction (2026-05-13)
+
+> Branched from `main`. Customer Service (Phase 4) lives on its own branch; this branch does NOT touch customer-service code. A small follow-up commit on the Phase 4 branch will deduplicate `JwtAuthenticationFilter` once both branches are ready to merge.
 
 ### What changed
 
-First real domain extracted. `customer-service` listens on `:8081`, registers with Eureka, and exposes:
-
-- **Public**: `POST /api/auth/register`, `POST /api/auth/login`
-- **Authenticated**: `GET/PUT /api/customers/me`, `GET /api/customers/{id}`
-- **Internal** (not gateway-routed): `GET /api/internal/customers/{id}`, `POST /api/internal/customers/{username}/promote-to-owner`
-
-The `Customer` entity is the same shape as in the monolith **except** the cross-domain `@OneToMany List<Order> orders` is gone. Other services reference customers by ID only. `Customer.Role` (CUSTOMER, RESTAURANT_OWNER, ADMIN) stays here and travels in the JWT `role` claim.
+- **`shared/common-security/`** got `JwtAuthenticationFilter.java` — promoted from customer-service now that restaurant-service is a second caller. Same logic, no behavior change for callers.
+- **`services/restaurant-service/`** on `:8082`, owns `restaurant_db`. Two-entity aggregate: `Restaurant` (root) + `MenuItem` (child) with a real FK inside the same DB.
+- **First Feign client + Resilience4j circuit breaker.** `CustomerServiceClient` → `customer-service` for `promote-to-owner`. Fallback throws `CustomerServiceUnavailableException` → HTTP 503.
+- **`/api/internal/restaurants/{id}/validate-order`** — the endpoint Order Service will call in Phase 6 to validate menu items and snapshot live prices.
 
 ### Why these decisions
 
-- **Customer first.** Among the four domains, Customer has zero outbound dependencies. Extracting it is the lowest-risk way to prove the pattern (JWT issuance, Eureka registration, shared lib consumption) before tackling harder domains.
-- **H2 in dev, PostgreSQL in Docker.** The monolith pattern. Lets the user run a single service locally without Postgres. Same dual-profile setup will repeat across all four services.
-- **JWT validated locally by the service (not just at the gateway).** The lab spec calls for gateway-level validation, but doing it in the service too gives us defense in depth AND makes the service individually testable with a Bearer token. Phase 9 will keep both layers active — the gateway becomes the first line, the service the second.
-- **`JwtAuthenticationFilter` lives in the service, not in common-security.** Extracting shared code on the *first* caller is premature. When Restaurant Service in Phase 5 needs the same filter, that's the moment to pull it up. Pattern: extract after two callers, not before.
-- **Internal endpoints under `/api/internal/**`.** Inter-service calls need lookups that bypass auth; putting them on a distinct path prefix means the gateway can simply not route `/api/internal/**`, and network policy in real deployment restricts them to the cluster network.
-- **`promote-to-owner` endpoint instead of role mutation by Restaurant Service.** The monolith had `RestaurantService.createRestaurant` writing to `Customer.role` — a cross-domain write that's the worst kind of coupling. The replacement is an explicit Customer Service operation called via Feign in Phase 5.
+- **`ownerId` + `ownerUsername` snapshot on `Restaurant`.** Storing only `ownerId` would force Restaurant Service to call Customer Service every time it checks ownership. Snapshotting the username at create-time means ownership checks are local. The tiny drift risk (user changes username) is acceptable; usernames are immutable in our customer model anyway.
+- **Promotion via Feign, not events.** The lab spec implies inter-service REST for this. Async via events would arguably be cleaner (eventual consistency for role), but Phase 8 reserves events for delivery; keeping promotion synchronous shows Feign + circuit breaker explicitly.
+- **The restaurant is saved BEFORE the promote-to-owner call.** If Customer Service is down, the user still gets their restaurant — the role bump just lags. Better than failing restaurant creation due to a flaky downstream. Documented in the README as "eventual consistency".
+- **Fallback throws an exception instead of returning a stub.** A 503 with a clear message is more honest than pretending success. Lab spec calls for "graceful error handling when a dependent service is unavailable" — graceful here means *informative*, not *silent*.
+- **`validateOrder` returns snapshot data including `restaurantName`, `unitPrice`, `menuItemName`.** Order Service writes those into `order_db` and never has to fan back out to Restaurant Service for reads. Historical orders stay immutable to upstream renames.
+- **Filter promotion timing.** I extracted `JwtAuthenticationFilter` to common-security on the *second* caller, not the first. Premature extraction creates the wrong abstraction; real second use teaches you what's actually shareable.
 
 ### Tradeoffs
 
-- Local `JwtAuthenticationFilter` will be moved to common-security in Phase 5 (small refactor cost, but real engineering signal).
-- `/api/internal/**` is `permitAll` — relies on network policy for security. Documented. Production would add mTLS or a shared internal HMAC.
-- JWT secret defaults to a placeholder in dev `application.yml`. Required to be set via `JWT_SECRET` env var in Docker. Documented in the README.
+- The restaurant created → promote-to-owner failure scenario leaves the system in a temporarily inconsistent state (restaurant exists, owner still has `CUSTOMER` role). Acceptable for this project; production would queue a retry.
+- `validate-order` endpoint is unauthenticated (`/api/internal/**`). Relies on network policy. Same trade-off as Phase 4.
+- A user's JWT still says `CUSTOMER` after promotion until they log in again — JWTs don't auto-refresh. Standard limitation, documented.
 
 ### Known limitations
 
-- No refresh tokens — access token TTL is 24h, same as monolith.
-- No rate-limiting on `/api/auth/login`. Phase 9 (gateway) will add it.
-- No audit log of role changes (e.g. promote-to-owner). Worth adding in a future iteration.
+- No restaurant rating updates (the `rating` column exists but no endpoint writes it). Future work.
+- No restaurant deactivation endpoint. Lab spec didn't ask for it.
+- The `/api/internal/restaurants/{id}/validate-order` endpoint does not check if the restaurant is active. Order Service decides whether to reject inactive-restaurant orders.
+
+### Cross-branch coordination
+
+Two branches will both touch `MIGRATION_LOG.md`:
+- `feat/customer-service-extraction` adds a Phase 4 entry between Phase 3 and the current "Next phase unblocks" line.
+- `feat/restaurant-service-extraction` (this branch) adds the Phase 5 entry below that same line.
+
+When both PRs merge, the resulting log should read Phase 0 → 1 → 2 → 3 → 4 → 5 in order. Trivial conflict, resolvable in the merge.
 
 ### Next phase unblocks
 
-Restaurant Service extraction (Phase 5). It will call Customer Service via Feign for `promote-to-owner` (when a customer creates a restaurant) and via the internal lookup endpoint (when validating ownership). That's the first cross-service synchronous call in the system.
+Order Service extraction (Phase 6). It calls Customer Service (`getById`) and Restaurant Service (`validateOrder`) via Feign. It uses the snapshot data from `validateOrder` to write `OrderItem` rows that include `menuItemName` and `unitPrice` — Order's reads will never fan out to Restaurant Service.

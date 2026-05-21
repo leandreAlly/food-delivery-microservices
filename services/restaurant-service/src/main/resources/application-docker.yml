@@ -1,0 +1,28 @@
+# =============================================================
+# Restaurant Service — Docker profile
+# =============================================================
+
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://restaurant-db:5432/restaurant_db}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USERNAME:restaurant}
+    password: ${DB_PASSWORD:restaurant}
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+
+  h2:
+    console:
+      enabled: false
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://eureka-server:8761/eureka/}
+  instance:
+    prefer-ip-address: false
+    hostname: restaurant-service
