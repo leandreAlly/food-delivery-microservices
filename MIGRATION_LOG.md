@@ -200,3 +200,39 @@ When both PRs merge, the resulting log should read Phase 0 → 1 → 2 → 3 →
 ### Next phase unblocks
 
 Order Service extraction (Phase 6). It calls Customer Service (`getById`) and Restaurant Service (`validateOrder`) via Feign. It uses the snapshot data from `validateOrder` to write `OrderItem` rows that include `menuItemName` and `unitPrice` — Order's reads will never fan out to Restaurant Service.
+
+---
+
+## Phase 7 — Delivery Service extraction (2026-05-15)
+
+### What changed
+
+- **`services/delivery-service/`** on `:8084`, owns `delivery_db`.
+- One Feign client: `OrderServiceClient.getById(orderId)` — used by the manual create-delivery endpoint to fetch snapshot data.
+- Driver pool stays hardcoded (5 names, 5 phones) — same as the monolith. No Driver Service.
+- **`POST /api/internal/deliveries`** — a "Phase 7 bridge": lets you create a delivery from an `orderId` synchronously. Phase 8 routes the same logic from an `OrderPlacedEvent` consumer.
+
+### Why these decisions
+
+- **Build standalone first, then wire events.** Doing Phase 7 (synchronous Delivery Service) before Phase 8 (RabbitMQ) means you can verify the delivery domain works in isolation — bad event wiring later won't be confused with a bad domain implementation.
+- **Snapshot data into Delivery on create.** `customerName`, `pickupAddress`, `deliveryAddress` are copied from the Order Service response. After this, Delivery never calls Order/Customer/Restaurant on read paths. Same read-model pattern as Order Service.
+- **Unique constraint on `orderId`.** Exactly one delivery per order. Prevents accidental duplicates from event redelivery (in Phase 8) or repeated manual calls.
+- **The `POST /api/internal/deliveries` endpoint stays after Phase 8.** It becomes admin-only (replay, manual recovery) rather than the primary creation path. Worth keeping for ops.
+- **`PATCH /status` mutates `delivery_db` only in Phase 7.** Phase 8 adds `DeliveryStatusUpdatedEvent` publishing so Order Service learns about it asynchronously and updates its own status. Until then, Order's status will lag — documented for testers.
+- **Same Feign + Resilience4j pattern as the other services.** `OrderServiceClient` with a fallback throwing `OrderServiceUnavailableException` → 503. Consistent error envelope; same `actuator/circuitbreakers` exposure.
+
+### Tradeoffs
+
+- Currently no way for Order Service to know when a driver picks up or delivers (status lags). This is the explicit cost of the Phase 7 / Phase 8 split. Phase 8 fixes it.
+- The hardcoded driver pool means we can't realistically test driver availability scenarios. Acceptable for a learning project; not for prod.
+- `existsByOrderId` short-circuit on the create path prevents duplicates, but a race between two concurrent create calls could still both pass the check before either commits — the DB unique constraint backstops the race. Tradeoff between an extra query and double inserts.
+
+### Known limitations
+
+- No driver assignment algorithm — `ThreadLocalRandom` over a static array. A real platform would dispatch by proximity, current load, etc.
+- No delivery cancellation endpoint exposed publicly (the monolith didn't have one either). Status `FAILED` is set internally on order cancellation in Phase 8.
+- Status-update endpoint does not validate state transitions (e.g., you can go from `PENDING` straight to `DELIVERED`). A state machine library or simple guard would tighten this.
+
+### Next phase unblocks
+
+RabbitMQ event integration (Phase 8) — the moment Order ↔ Delivery becomes asynchronous. Order Service publishes `OrderPlacedEvent` after order commit; Delivery Service consumes it and creates the delivery (removing the manual `POST /api/internal/deliveries` from the critical path). Delivery Service publishes `DeliveryStatusUpdatedEvent` on driver progress; Order Service consumes it and advances `order.status` automatically. DLQ + idempotency tables handle redelivery.
