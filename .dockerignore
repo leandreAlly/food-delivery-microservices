@@ -1,0 +1,40 @@
+# =============================================================
+# Docker build-context exclusions
+# =============================================================
+# Build context is the repo root (so service Dockerfiles can COPY
+# from both shared/ and services/). Without this file, the entire
+# repo would be sent to the daemon for every build.
+# =============================================================
+
+# Build output
+**/target/
+
+# IDE
+**/.idea/
+**/*.iml
+**/.vscode/
+
+# Git + GitHub
+.git/
+.github/
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+
+# Maven
+**/.mvn/wrapper/maven-wrapper.jar
+
+# Secrets / overrides — never bake these into images
+.env
+.env.local
+**/application-local.yml
+**/application-secret.yml
+
+# Things the build doesn't need
+monolith-reference/
+postman/
+docs/
+docker/
+MIGRATION_LOG.md
+README.md
