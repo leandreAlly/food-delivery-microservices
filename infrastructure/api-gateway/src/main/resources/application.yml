@@ -1,0 +1,45 @@
+# =============================================================
+# API Gateway — Spring Cloud Gateway on :8080
+# Local dev profile.
+# Routes are added in 9.2.
+# =============================================================
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+
+  # Explicit reactive type. Default is auto-detected (reactive because
+  # spring-cloud-starter-gateway is on the classpath), but being explicit
+  # rules out surprises if someone later adds a servlet starter by mistake.
+  main:
+    web-application-type: reactive
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+
+# --- Actuator ---
+# /actuator/gateway lists active routes (handy in 9.2+).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    health:
+      show-details: when_authorized
+    gateway:
+      enabled: true
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO
+    org.springframework.web.reactive: INFO

@@ -1,0 +1,12 @@
+# =============================================================
+# API Gateway — Docker profile
+# Activated by SPRING_PROFILES_ACTIVE=docker in docker-compose.
+# =============================================================
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://eureka-server:8761/eureka/}
+  instance:
+    prefer-ip-address: false
+    hostname: api-gateway
