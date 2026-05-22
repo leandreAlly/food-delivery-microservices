@@ -3,6 +3,10 @@
 # Activated by SPRING_PROFILES_ACTIVE=docker in docker-compose.
 # =============================================================
 
+spring.data.redis:
+  host: ${REDIS_HOST:redis}
+  port: ${REDIS_PORT:6379}
+
 eureka:
   client:
     service-url:

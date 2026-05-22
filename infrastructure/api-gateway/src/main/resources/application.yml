@@ -38,7 +38,26 @@ spring:
           predicates:
             - Path=/api/restaurants/**
 
-        # Order Service.
+        # Order Service — order PLACEMENT only. Rate-limited per user.
+        # Listed BEFORE the catch-all order-service route so it matches first.
+        - id: order-service-place
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders
+            - Method=POST
+          filters:
+            - name: RequestRateLimiter
+              args:
+                # Demo-friendly token bucket: 1 token/sec sustained, burst of 3.
+                # A sequential bash loop clearly shows 429s after the first ~3
+                # requests. Bump these up for real production traffic.
+                redis-rate-limiter.replenishRate: 1
+                redis-rate-limiter.burstCapacity: 3
+                redis-rate-limiter.requestedTokens: 1
+                # Bucket key: X-User-Id (resolved by RateLimitConfig.userKeyResolver).
+                key-resolver: "#{@userKeyResolver}"
+
+        # Order Service — every other read/update endpoint. Unlimited.
         - id: order-service
           uri: lb://order-service
           predicates:
@@ -49,6 +68,11 @@ spring:
           uri: lb://delivery-service
           predicates:
             - Path=/api/deliveries/**
+
+# --- Redis (rate-limit token bucket store) ---
+spring.data.redis:
+  host: ${REDIS_HOST:localhost}
+  port: ${REDIS_PORT:6379}
 
 # --- JWT (verification only — gateway never issues tokens) ---
 # The secret MUST match what customer-service uses to sign tokens. In
