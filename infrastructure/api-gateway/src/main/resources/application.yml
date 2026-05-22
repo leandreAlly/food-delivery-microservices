@@ -17,6 +17,39 @@ spring:
   main:
     web-application-type: reactive
 
+  cloud:
+    gateway:
+      # ----------------------------------------------------------------
+      # Routes — lb:// resolves the destination via Eureka.
+      # /api/internal/** is intentionally NOT routed — those endpoints
+      # exist for inter-service calls only and are unreachable from
+      # outside (the gateway returns 404 for them).
+      # ----------------------------------------------------------------
+      routes:
+        # Customer Service — handles BOTH auth and customer-profile paths.
+        - id: customer-service
+          uri: lb://customer-service
+          predicates:
+            - Path=/api/auth/**,/api/customers/**
+
+        # Restaurant Service — catalog + menu.
+        - id: restaurant-service
+          uri: lb://restaurant-service
+          predicates:
+            - Path=/api/restaurants/**
+
+        # Order Service.
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/**
+
+        # Delivery Service.
+        - id: delivery-service
+          uri: lb://delivery-service
+          predicates:
+            - Path=/api/deliveries/**
+
 eureka:
   client:
     service-url:
