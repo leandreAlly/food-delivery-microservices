@@ -97,6 +97,12 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- RabbitMQ — Phase 8 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
         <!-- Shared libs -->
         <dependency>
             <groupId>com.fooddelivery.shared</groupId>
@@ -106,6 +112,11 @@
         <dependency>
             <groupId>com.fooddelivery.shared</groupId>
             <artifactId>common-web</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fooddelivery.shared</groupId>
+            <artifactId>common-events</artifactId>
             <version>1.0.0</version>
         </dependency>
 
