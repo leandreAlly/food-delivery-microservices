@@ -31,6 +31,23 @@ spring:
       circuitbreaker:
         enabled: true
 
+  # ---- RabbitMQ (Phase 8) ----
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        # Retry with exponential back-off, then dead-letter.
+        retry:
+          enabled: true
+          initial-interval: 1s
+          max-attempts: 3
+          multiplier: 2.0
+        # Reject + dont-requeue on final failure -> message goes to DLX.
+        default-requeue-rejected: false
+
 # JWT validation only — Order Service never issues tokens.
 app:
   jwt:

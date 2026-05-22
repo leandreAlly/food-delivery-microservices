@@ -11,15 +11,20 @@ import com.fooddelivery.order.dto.PlaceOrderRequest;
 import com.fooddelivery.order.model.Order;
 import com.fooddelivery.order.model.OrderItem;
 import com.fooddelivery.order.repository.OrderRepository;
+import com.fooddelivery.shared.events.OrderCancelledEvent;
+import com.fooddelivery.shared.events.OrderPlacedEvent;
 import com.fooddelivery.shared.security.AuthenticatedUser;
 import com.fooddelivery.shared.security.UnauthorizedException;
 import com.fooddelivery.shared.web.exception.ResourceNotFoundException;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class OrderService {
@@ -27,13 +32,16 @@ public class OrderService {
     private final OrderRepository orders;
     private final CustomerServiceClient customerService;
     private final RestaurantServiceClient restaurantService;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     public OrderService(OrderRepository orders,
                         CustomerServiceClient customerService,
-                        RestaurantServiceClient restaurantService) {
+                        RestaurantServiceClient restaurantService,
+                        ApplicationEventPublisher applicationEventPublisher) {
         this.orders = orders;
         this.customerService = customerService;
         this.restaurantService = restaurantService;
+        this.applicationEventPublisher = applicationEventPublisher;
     }
 
     @Transactional
@@ -98,8 +106,22 @@ public class OrderService {
 
         Order saved = orders.save(order);
 
-        // Phase 8 will publish OrderPlacedEvent here (RabbitMQ) so
-        // Delivery Service can asynchronously create the delivery.
+        // Publish OrderPlacedEvent as a Spring application event. The actual
+        // RabbitMQ publish happens in OrderEventPublisher with
+        // @TransactionalEventListener(AFTER_COMMIT) so the broker sees the
+        // event only if the DB write commits successfully.
+        applicationEventPublisher.publishEvent(new OrderPlacedEvent(
+                UUID.randomUUID().toString(),
+                Instant.now(),
+                saved.getId(),
+                saved.getCustomerId(),
+                saved.getCustomerName(),
+                saved.getRestaurantId(),
+                saved.getRestaurantName(),
+                saved.getRestaurantAddress(),
+                saved.getDeliveryAddress(),
+                saved.getTotalAmount()
+        ));
 
         return OrderResponse.from(saved);
     }
@@ -148,11 +170,18 @@ public class OrderService {
         }
 
         order.setStatus(Order.OrderStatus.CANCELLED);
+        Order saved = orders.save(order);
 
-        // Phase 8 will publish OrderCancelledEvent so Delivery Service
-        // can mark any in-flight delivery as FAILED.
+        // Phase 8: publish OrderCancelledEvent so Delivery Service can mark
+        // any in-flight delivery as FAILED. Same after-commit pattern.
+        applicationEventPublisher.publishEvent(new OrderCancelledEvent(
+                UUID.randomUUID().toString(),
+                Instant.now(),
+                saved.getId(),
+                "Cancelled by " + caller.username()
+        ));
 
-        return OrderResponse.from(orders.save(order));
+        return OrderResponse.from(saved);
     }
 
     private Order findOrder(Long id) {
