@@ -308,3 +308,57 @@ Stop RabbitMQ and place a new order: the order is saved (DB commit succeeds) but
 ### Next phase unblocks
 
 Spring Cloud Gateway (Phase 9). With all four business services event-integrated, the gateway becomes the public entry point — single endpoint for clients, JWT validation, route predicates per service via `lb://`, Redis-backed rate limiting on `POST /api/orders`, and circuit-breaker fallback routes that return clean JSON instead of timeouts.
+
+---
+
+## Phase 9 — Spring Cloud Gateway (2026-05-17 → 2026-05-18)
+
+> Six sub-commits on `feat/api-gateway-with-jwt-and-ratelimit`:
+> **9.1** scaffold · **9.2** routes · **9.3** JWT filter · **9.4** rate limit · **9.5** fallback routes · **9.6** docs.
+> Plus a follow-up `fix/return-401-for-unauthenticated` for a Spring Security default that became visible during testing.
+
+### What changed
+
+- **`infrastructure/api-gateway/`** — new Spring Cloud Gateway app on `:8080`, registered as `api-gateway` with Eureka. Reactive stack (WebFlux + Netty); explicitly NOT mixed with servlet starters.
+- **Six routes** declared in `application.yml` via `lb://service-name`:
+  - `customer-service` (handles both `/api/auth/**` and `/api/customers/**`)
+  - `restaurant-service` (`/api/restaurants/**`)
+  - `order-service-place` (`POST /api/orders` only — rate-limited)
+  - `order-service` (catch-all for `/api/orders/**`)
+  - `delivery-service` (`/api/deliveries/**`)
+  - `/api/internal/**` deliberately has no route → 404 from gateway.
+- **`JwtAuthGlobalFilter`** — reactive `GlobalFilter` (order `-100`) validates Bearer tokens via `JwtVerifier` from `common-security` and rewrites the outbound request with `X-User-Id` / `X-User-Username` / `X-User-Role` headers. Public paths bypass the filter.
+- **`RequestRateLimiter`** on `POST /api/orders` — Redis-backed token bucket. Demo settings: `replenishRate: 1`, `burstCapacity: 3`. Key is `X-User-Id` (resolved by `RateLimitConfig.userKeyResolver`).
+- **CircuitBreaker filter** on every route → forwards to `/fallback/{service}` (the `FallbackController`) when the breaker opens. Returns a uniform 503 `ErrorResponse` envelope.
+- **`fix/return-401-for-unauthenticated`** (merged before 9.4) — adds `JsonAuthenticationEntryPoint` + `JsonAccessDeniedHandler` to `common-security`, wired into all four services' `SecurityConfig`. Replaces Spring Security 6's default 403-for-anonymous behavior with the semantically correct 401.
+
+### Why these decisions
+
+- **Reactive gateway, not servlet.** Spring Cloud Gateway is built on WebFlux. Mixing `spring-boot-starter-web` (servlet) and `spring-cloud-starter-gateway` causes startup conflicts. `spring.main.web-application-type: reactive` is set explicitly to lock this in even if someone later adds the wrong starter.
+- **`GlobalFilter`, not the servlet `JwtAuthenticationFilter` from `common-security`.** The servlet filter doesn't work in a reactive pipeline. The gateway needs a reactive equivalent that mutates the `ServerWebExchange`. Same `JwtVerifier`, same trust model — different filter type.
+- **Defense in depth — services keep validating JWTs.** The gateway is the first line of validation; downstream services still run their own `JwtAuthenticationFilter` from `common-security`. If anyone bypasses the gateway (network misconfig, debug exposure, etc.), the service is not wide open. The lab spec calls for "JWT auth at the gateway level"; keeping the downstream check is an additional safety net documented as an architectural choice.
+- **Rate limit on POST `/api/orders` only.** Reads (GETs) of orders aren't the abuse vector — placement is. Splitting the route into two (`order-service-place` for the POST + `order-service` for everything else) lets us apply different filters precisely. Order matters: the more-specific route is listed first so it matches before the catch-all.
+- **Filter order on the placement route: rate-limit BEFORE circuit-breaker.** A request that's being rate-limited shouldn't consume a downstream call slot. If the bucket says no, return 429 immediately; only if the request passes the limiter does the circuit breaker attempt the downstream.
+- **Per-user rate limit key.** Bucketing per IP is fragile (NAT, mobile carriers); per-user via `X-User-Id` matches usage. The header is guaranteed present because the JWT filter runs first on every route the limiter is applied to.
+- **Demo-friendly rate limit values (`1` / `3`).** Initial values (`5` / `10`) didn't visibly fire in a sequential bash loop because the loop's request rate stayed below the replenish rate. Lowered to make the 429 path obvious during review. Production would tune up.
+- **Default Resilience4j config applied to all CBs.** Each route gets a named instance (`customerServiceCircuitBreaker`, etc.) but they all inherit from `resilience4j.circuitbreaker.configs.default`. Reduces YAML and ensures consistent tuning across the platform.
+- **`fix/return-401-for-unauthenticated` as a separate branch.** It surfaced while testing 9.3 but it's not gateway-specific — it's a pre-existing Spring Security default in all four services. Keeping it on its own PR meant Phase 9's diff stays focused on gateway code, and the 401 fix has its own reviewable history.
+
+### Tradeoffs
+
+- **Gateway is a single point of failure** in the lab setup. Production runs N replicas behind a TCP load balancer. Documented; out of scope.
+- **Redis is a new operational dependency.** The gateway won't start cleanly without it. In the lab that's a `docker run`; in production that's a Redis cluster to operate. Acceptable for the rate-limit guarantees we get.
+- **Two layers of circuit breakers** (Feign-level from Phase 6 + gateway-level here). Not redundant — they protect against different failures (service-to-service vs gateway-to-service). Slight cognitive overhead worth the extra resilience.
+- **No correlation-ID propagation through the gateway yet.** The downstream `CorrelationIdFilter` generates one if the header is missing, but the gateway doesn't yet do that itself. Easy to add later; not done here to keep the phase scope tight.
+
+### Known limitations
+
+- No CORS configuration. Browsers would need it for cross-origin XHR.
+- No request/response logging filter beyond Spring defaults. Production would add structured access logs.
+- Rate-limit settings are static in YAML. A real platform would let ops tune these without restart (e.g., Spring Cloud Config + refresh).
+- The fallback controller does not propagate the original request path; the response's `path` field shows `/fallback/{service}` rather than the route the client requested. Minor cosmetic — clients still know what they called.
+- 429 responses use Spring Cloud Gateway's default empty body. The 401 and 503 responses do go through the project's `ErrorResponse` envelope; 429 doesn't. Inconsistent envelope shape, documented for follow-up.
+
+### Next phase unblocks
+
+Dockerization + Docker Compose (Phase 10). Every service / infra component (Eureka, gateway, 4 services, 4 Postgres containers, Redis, RabbitMQ) gets a multi-stage `Dockerfile`. A single `docker compose up` brings the whole platform online, with health checks ensuring the right startup order (databases & Eureka up before services; services up before gateway).
