@@ -1,6 +1,8 @@
 package com.fooddelivery.customer.config;
 
 import com.fooddelivery.customer.security.JwtAuthenticationFilter;
+import com.fooddelivery.shared.security.JsonAccessDeniedHandler;
+import com.fooddelivery.shared.security.JsonAuthenticationEntryPoint;
 import com.fooddelivery.shared.security.JwtIssuer;
 import com.fooddelivery.shared.security.JwtProperties;
 import com.fooddelivery.shared.security.JwtVerifier;
@@ -49,6 +51,12 @@ public class SecurityConfig {
                 .requestMatchers("/api/internal/**").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
                 .anyRequest().authenticated()
+            )
+            // Return 401 (not Spring's default 403) when the caller has no
+            // credentials. Authenticated-but-forbidden still gets 403.
+            .exceptionHandling(eh -> eh
+                .authenticationEntryPoint(new JsonAuthenticationEntryPoint())
+                .accessDeniedHandler(new JsonAccessDeniedHandler())
             )
             .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
