@@ -1,0 +1,159 @@
+# =============================================================
+# API Gateway — Spring Cloud Gateway on :8080
+# Local dev profile.
+# Routes are added in 9.2.
+# =============================================================
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+
+  # Explicit reactive type. Default is auto-detected (reactive because
+  # spring-cloud-starter-gateway is on the classpath), but being explicit
+  # rules out surprises if someone later adds a servlet starter by mistake.
+  main:
+    web-application-type: reactive
+
+  cloud:
+    gateway:
+      # ----------------------------------------------------------------
+      # Routes — lb:// resolves the destination via Eureka.
+      # /api/internal/** is intentionally NOT routed — those endpoints
+      # exist for inter-service calls only and are unreachable from
+      # outside (the gateway returns 404 for them).
+      # ----------------------------------------------------------------
+      routes:
+        # Customer Service — handles BOTH auth and customer-profile paths.
+        - id: customer-service
+          uri: lb://customer-service
+          predicates:
+            - Path=/api/auth/**,/api/customers/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: customerServiceCircuitBreaker
+                fallbackUri: forward:/fallback/customer-service
+
+        # Restaurant Service — catalog + menu.
+        - id: restaurant-service
+          uri: lb://restaurant-service
+          predicates:
+            - Path=/api/restaurants/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: restaurantServiceCircuitBreaker
+                fallbackUri: forward:/fallback/restaurant-service
+
+        # Order Service — order PLACEMENT only. Rate-limited per user.
+        # Listed BEFORE the catch-all order-service route so it matches first.
+        # Filter order matters: rate-limit BEFORE circuit-breaker so a
+        # rate-limited request never burns a downstream call.
+        - id: order-service-place
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders
+            - Method=POST
+          filters:
+            - name: RequestRateLimiter
+              args:
+                # Demo-friendly token bucket: 1 token/sec sustained, burst of 3.
+                # A sequential bash loop clearly shows 429s after the first ~3
+                # requests. Bump these up for real production traffic.
+                redis-rate-limiter.replenishRate: 1
+                redis-rate-limiter.burstCapacity: 3
+                redis-rate-limiter.requestedTokens: 1
+                # Bucket key: X-User-Id (resolved by RateLimitConfig.userKeyResolver).
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: orderServiceCircuitBreaker
+                fallbackUri: forward:/fallback/order-service
+
+        # Order Service — every other read/update endpoint. Unlimited.
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: orderServiceCircuitBreaker
+                fallbackUri: forward:/fallback/order-service
+
+        # Delivery Service.
+        - id: delivery-service
+          uri: lb://delivery-service
+          predicates:
+            - Path=/api/deliveries/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: deliveryServiceCircuitBreaker
+                fallbackUri: forward:/fallback/delivery-service
+
+# --- Redis (rate-limit token bucket store) ---
+spring.data.redis:
+  host: ${REDIS_HOST:localhost}
+  port: ${REDIS_PORT:6379}
+
+# --- JWT (verification only — gateway never issues tokens) ---
+# The secret MUST match what customer-service uses to sign tokens. In
+# Docker / prod, both sides read from the JWT_SECRET env var.
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-jwt-secret-do-not-use-in-production-min-256-bits-required}
+    expiration-ms: 86400000
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+
+# --- Actuator ---
+# /actuator/gateway lists active routes (handy in 9.2+).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway,circuitbreakers,circuitbreakerevents
+  endpoint:
+    health:
+      show-details: when_authorized
+    gateway:
+      enabled: true
+  health:
+    circuitbreakers:
+      enabled: true
+
+# --- Resilience4j circuit breakers ---
+# One 'default' config that every named instance inherits.
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 5s
+        cancel-running-future: true
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO
+    org.springframework.web.reactive: INFO
+    io.github.resilience4j: INFO

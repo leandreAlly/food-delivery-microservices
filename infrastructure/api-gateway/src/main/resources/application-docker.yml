@@ -1,0 +1,16 @@
+# =============================================================
+# API Gateway — Docker profile
+# Activated by SPRING_PROFILES_ACTIVE=docker in docker-compose.
+# =============================================================
+
+spring.data.redis:
+  host: ${REDIS_HOST:redis}
+  port: ${REDIS_PORT:6379}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://eureka-server:8761/eureka/}
+  instance:
+    prefer-ip-address: false
+    hostname: api-gateway
