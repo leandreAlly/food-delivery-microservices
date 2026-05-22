@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    ======================================================================
+    Food Delivery Platform — Aggregator POM (build convenience only)
+    ======================================================================
+    This is an AGGREGATOR, not a parent. No child pom has <parent> pointing
+    at this file. No version inheritance, no plugin inheritance. Every
+    service / library remains a fully standalone Maven project.
+
+    What this file gives us:
+      - `mvn install` at the repo root builds every module in dependency
+        order in one command.
+      - IntelliJ (or any Maven-aware IDE) imports the whole workspace by
+        opening this single pom, instead of adding each module one by one.
+
+    What it does NOT do:
+      - Centralize dependency versions (those stay in each child pom on
+        purpose, per the project's "standalone poms" decision).
+      - Affect a service's classpath, packaging, or runtime behavior in any
+        way — each Dockerfile still builds its own module independently.
+
+    monolith-reference/ is deliberately excluded — that module is read-only
+    reference material and is not part of the migration's build.
+    ======================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.fooddelivery</groupId>
+    <artifactId>food-delivery-aggregator</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>Food Delivery Platform — Aggregator</name>
+    <description>
+        Lists every module in dependency order so `mvn install` builds the
+        workspace and IntelliJ imports it in one shot. Children are NOT
+        modified — they remain standalone projects with their own poms.
+    </description>
+
+    <modules>
+        <!-- Shared libraries first — services depend on these being installed. -->
+        <module>shared/common-security</module>
+        <module>shared/common-web</module>
+        <module>shared/common-events</module>
+
+        <!-- Infrastructure services. -->
+        <module>infrastructure/eureka-server</module>
+        <module>infrastructure/api-gateway</module>
+
+        <!-- Business services. -->
+        <module>services/customer-service</module>
+        <module>services/restaurant-service</module>
+        <module>services/order-service</module>
+        <module>services/delivery-service</module>
+    </modules>
+</project>
