@@ -1,5 +1,7 @@
 package com.fooddelivery.restaurant.config;
 
+import com.fooddelivery.shared.security.JsonAccessDeniedHandler;
+import com.fooddelivery.shared.security.JsonAuthenticationEntryPoint;
 import com.fooddelivery.shared.security.JwtAuthenticationFilter;
 import com.fooddelivery.shared.security.JwtProperties;
 import com.fooddelivery.shared.security.JwtVerifier;
@@ -43,6 +45,10 @@ public class SecurityConfig {
                 // Actuator
                 .requestMatchers("/actuator/**").permitAll()
                 .anyRequest().authenticated()
+            )
+            .exceptionHandling(eh -> eh
+                .authenticationEntryPoint(new JsonAuthenticationEntryPoint())
+                .accessDeniedHandler(new JsonAccessDeniedHandler())
             )
             .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
