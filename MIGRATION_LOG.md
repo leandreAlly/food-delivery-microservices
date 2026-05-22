@@ -362,3 +362,46 @@ Spring Cloud Gateway (Phase 9). With all four business services event-integrated
 ### Next phase unblocks
 
 Dockerization + Docker Compose (Phase 10). Every service / infra component (Eureka, gateway, 4 services, 4 Postgres containers, Redis, RabbitMQ) gets a multi-stage `Dockerfile`. A single `docker compose up` brings the whole platform online, with health checks ensuring the right startup order (databases & Eureka up before services; services up before gateway).
+
+---
+
+## Phase 10 — Dockerization + Docker Compose (2026-05-19 → 2026-05-20)
+
+### What changed
+
+- **Six multi-stage `Dockerfile`s** — one per Spring Boot app (eureka-server, api-gateway, customer-service, restaurant-service, order-service, delivery-service). Stage 1 uses `maven:3.9-eclipse-temurin-21`; stage 2 uses `eclipse-temurin:21-jre-alpine` + `curl` for healthchecks.
+- **`docker-compose.yml`** at the repo root wires up the full platform: 4 Postgres containers, Redis, RabbitMQ, Eureka, 4 services, and the gateway. Healthchecks on everything; `depends_on: condition: service_healthy` enforces boot order.
+- **`.dockerignore`** at the root excludes `target/`, `.idea/`, `.git/`, secrets, `monolith-reference/`, and other things that don't belong in the build context.
+- **`.env.example`** documents the two env vars worth overriding locally (`JWT_SECRET`, `RABBITMQ_USER`/`PASSWORD`). `.env` itself is gitignored.
+- **`docker/README.md`** — runbook covering boot order, port map, common ops, end-to-end smoke test, and troubleshooting.
+
+### Why these decisions
+
+- **Build context = repo root, not each service's own dir.** Each service Dockerfile needs *both* its own source AND the `shared/` libs. Setting the context to the root means one `COPY shared/common-* …` line works. The compose `build:` block names the per-service `Dockerfile` path inside that shared context.
+- **Multi-stage build.** Stage 1 brings Maven and the JDK; stage 2 keeps only the JRE + the jar. Final images drop from ~600 MB to ~150 MB. Standard practice; the lab spec explicitly calls for multi-stage.
+- **Each service installs only the shared libs it actually uses.** Customer/restaurant/gateway need security+web. Order/delivery also need events. Eureka needs none. Avoids an unnecessary install step in containers that don't depend on a given lib.
+- **4 separate Postgres containers, not one with 4 DBs.** Locked decision from Phase 0. Closer to a real production deployment where each service owns its own database physically. Comes with the cost of 4× the RAM, which is fine on a dev box.
+- **Postgres ports remapped to `5433–5436` on the host.** Postgres-on-port-5432 is a common dev-machine setup; remapping avoids the conflict and makes "connect to *which* DB" explicit (`psql -p 5435 …` is unambiguously the order DB).
+- **Dedicated RabbitMQ user `fooddelivery/fooddelivery`.** RabbitMQ's default `guest` is restricted to loopback — connections from another container appear remote and get rejected. The dedicated user just works inside the compose network. Documented in `docker/README.md`.
+- **`JWT_SECRET` defaulted in the compose file, overridable via `.env`.** For the lab demo, the dev default is fine. Production reads from env. The default keeps the compose file self-contained — no `.env` required to bring it up.
+- **Healthchecks on everything, with `start_period: 60s` for Spring services.** Without a generous start period, Spring's 30–45 second cold-start gets flagged as unhealthy and depends_on cascades fail. Postgres/Redis healthcheck within 5–10 s.
+- **`apk add --no-cache curl` in the runtime stage.** Spring's built-in Java HTTP client could probably do the healthcheck, but `curl` is the idiomatic Docker healthcheck tool and 2 MB extra is negligible.
+- **No HEALTHCHECK directive in the Dockerfiles themselves — only in compose.** Centralizes the policy. Tuning a healthcheck doesn't require an image rebuild.
+
+### Tradeoffs
+
+- **Initial `--build` takes 5–10 minutes.** Each service rebuilds the shared libs in its own Dockerfile. A shared "base image with libs pre-installed" pattern would speed this up, but adds operational complexity (an extra image to publish + tag). Out of scope.
+- **No Docker BuildKit cache mounts for Maven `.m2`.** Would speed up repeat builds dramatically. Skipped — adds opt-in BuildKit syntax that's another thing to teach.
+- **No CI integration yet.** The `docker compose build` command works on a developer laptop. A real platform would build images in CI and push to a registry, then compose would `image:` from there instead of `build:`. Documented as future work.
+- **Logs are container-local.** No centralized logging (ELK / Loki / etc.). For the lab `docker compose logs -f` is enough.
+- **No persistent volumes for the services themselves.** Only the databases and RabbitMQ persist state. Services restart fresh — fine because all state lives in their DBs.
+
+### Known limitations
+
+- The build context is the repo root, which means changes anywhere in the repo (even unrelated files) can invalidate the Docker cache and trigger rebuilds. `.dockerignore` mitigates by excluding the obvious noise but it's not perfect. A monorepo with per-service contexts would need symlinks or build-time wrapper scripts — both more complex than the lab needs.
+- `docker compose up` doesn't run database migrations. Each service uses `hibernate.ddl-auto: update` in the Docker profile — fine for the lab, but production must use Flyway / Liquibase migrations + `ddl-auto: validate`. Documented as the Phase-0 risk we accepted.
+- Eureka's self-preservation is enabled in the Docker profile (the default), which means stopped services linger in the registry. For the lab we keep this; if you want them to evict quickly, override in `application-docker.yml`.
+
+### Next phase unblocks
+
+Postman collection + architecture docs + final migration-log polish (Phase 11). With the platform packaged, the reviewer's experience is `cp .env.example .env && docker compose up --build`, then a single Postman collection runs the full end-to-end flow through the gateway. Phase 11 produces that collection, an architecture diagram, an API-contract reference, and the top-level README that ties everything together.
