@@ -62,6 +62,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Shared libs — JwtVerifier + SecurityHeaders + ErrorResponse. -->
+        <dependency>
+            <groupId>com.fooddelivery.shared</groupId>
+            <artifactId>common-security</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fooddelivery.shared</groupId>
+            <artifactId>common-web</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

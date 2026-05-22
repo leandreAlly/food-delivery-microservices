@@ -50,6 +50,14 @@ spring:
           predicates:
             - Path=/api/deliveries/**
 
+# --- JWT (verification only — gateway never issues tokens) ---
+# The secret MUST match what customer-service uses to sign tokens. In
+# Docker / prod, both sides read from the JWT_SECRET env var.
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-jwt-secret-do-not-use-in-production-min-256-bits-required}
+    expiration-ms: 86400000
+
 eureka:
   client:
     service-url:
