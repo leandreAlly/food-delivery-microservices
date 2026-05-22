@@ -68,6 +68,15 @@
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
 
+        <!-- Resilience4j circuit breaker for reactive routes.
+             Note the 'reactor' in the artifact name — the servlet variant
+             (spring-cloud-starter-circuitbreaker-resilience4j) is NOT what
+             we want on a WebFlux gateway. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
+        </dependency>
+
         <!-- Shared libs — JwtVerifier + SecurityHeaders + ErrorResponse. -->
         <dependency>
             <groupId>com.fooddelivery.shared</groupId>
